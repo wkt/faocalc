@@ -18,7 +18,7 @@
 
 #include "stepcalc.h"
 
-typedef double (*OperatorFunc)(double n1,double n2);
+typedef CommonNum (*OperatorFunc)(CommonNum n1,CommonNum n2);
 
 
 #define CALC_ITEM_SIZE (sizeof(CalcItem))
@@ -32,6 +32,15 @@ static const char *operators[]=
     [OPERATOR_LAST] = NULL,
 };
 
+static struct
+{
+    const char *op_alias;
+    const char *op;
+}op_alias_array[]=
+{
+    {"**","x"},
+    {NULL,NULL},
+};
 
 
 static short op_matrix[4][4]=
@@ -50,33 +59,44 @@ static unsigned short MAX_DOT_CHAR  = 6;
 
 
 static inline CalcItem**
-calc_item_exp(CalcItem *parent,const char *exp_string,char **end_str);
+calc_item_exp(CalcItem *parent,const char *exp_string,const char **end_str);
 
 static inline void
 calc_item_free(CalcItem* it);
 
-static inline double
-operator_add(double n1,double n2)
+static inline OperatorID
+string_get_match_opid(const char *exp_string,const char **op_end);
+
+static inline CommonNum
+operator_add(CommonNum n1,CommonNum n2)
 {
     return n1 + n2;
 }
 
-static inline double
-operator_sub(double n1,double n2)
+static inline CommonNum
+operator_sub(CommonNum n1,CommonNum n2)
 {
     return n1 - n2;
 }
 
-static inline double
-operator_multi(double n1,double n2)
+static inline CommonNum
+operator_multi(CommonNum n1,CommonNum n2)
 {
     return n1 * n2;
 }
 
-static inline double
-operator_div(double n1,double n2)
+static inline CommonNum
+operator_div(CommonNum n1,CommonNum n2)
 {
     return n1 / n2;
+}
+
+static inline int
+common_num_to_string(CommonNum cn,char *s,size_t n)
+{
+    if(s == NULL)return 0;
+    s[0]=0;
+    return snprintf(s,n,"%0.*Lf",MAX_DOT_CHAR,cn);
 }
 
 static const OperatorFunc operators_funcs[]=
@@ -110,26 +130,59 @@ operator_cmpid(OperatorID id1,OperatorID id2)
     return op_matrix[id1][id2];
 }
 
+static inline short
+operator_get_by_alias(const char*op_alias_pre,const char **op_end)
+{
+    int i;
+    int op_len;
+    if(op_end)*op_end = NULL;
+    for(i=0;op_alias_array[i].op;i++)
+    {
+        op_len = strlen(op_alias_array[i].op_alias);
+        if(strncmp(op_alias_pre,op_alias_array[i].op_alias,op_len) == 0)
+        {
+            if(op_end)
+            {
+                *op_end = op_alias_pre+op_len;
+            }
+            return string_get_match_opid(op_alias_array[i].op,NULL);
+        }
+    }
+    return OPERATOR_NONE;
+}
+
 static inline OperatorID
-string_prefix_get_match_opid(const char *exp_string)
+string_get_match_opid(const char *exp_string,const char **op_end)
 {
     OperatorID opid = OPERATOR_NONE;
     int i = 0;
+    if(op_end)
+        *op_end = NULL;
     for(;operators[i];i++)
     {
-        if(strncmp(operators[i],exp_string,strlen(operators[i])) == 0)
+        int op_len = strlen(operators[i]);
+        if(strncmp(operators[i],exp_string,op_len) == 0)
         {
             opid = i;
+            if(op_end)
+            {
+                *op_end = exp_string+op_len;
+            }
             break;
         }
+    }
+    if(opid == OPERATOR_NONE)
+    {
+        opid = operator_get_by_alias(exp_string,op_end);
     }
     return opid;
 }
 
+
 static inline short
 operator_cmp_op(const char *op1,const char *op2)
 {
-    return operator_cmpid(string_prefix_get_match_opid(op1),string_prefix_get_match_opid(op2));
+    return operator_cmpid(string_get_match_opid(op1,NULL),string_get_match_opid(op2,NULL));
 }
 
 static inline void
@@ -291,11 +344,23 @@ calc_item_merge_exp(CalcItem** ex,size_t gap1,size_t gap2)
     }
 }
 
-static inline CalcItem**
-calc_item_exp(CalcItem *parent,const char *exp_string,char **end_str)
+static inline const char*
+calc_item_exp_skip_blank(const char *s)
 {
-    char *e_str = 0;
-    char *t_str = NULL;
+    if(s == NULL)
+        return NULL;
+    while (*s && isblank(*s))
+    {
+        s++;
+    }
+    return s;
+}
+
+static inline CalcItem**
+calc_item_exp(CalcItem *parent,const char *exp_string,const char **end_str)
+{
+    const char *e_str = 0;
+    const char *t_str = NULL;
     CalcItem    **res = NULL;
     CalcItem    *it = NULL;
     int i = 0;
@@ -306,6 +371,7 @@ calc_item_exp(CalcItem *parent,const char *exp_string,char **end_str)
                 continue;
         }
         it = calc_item_get(parent,it,e_str,&t_str);
+        e_str = calc_item_exp_skip_blank(t_str);
         if(it)
         {
             res = realloc(res,sizeof(CalcItem*)*(i+2));
@@ -313,33 +379,46 @@ calc_item_exp(CalcItem *parent,const char *exp_string,char **end_str)
             i ++;
             res[i] = NULL;
         }else{
-            fprintf(stderr,"error @%s\n",e_str);
+///            fprintf(stderr,"error @%s\n",e_str);
+            calc_item_free_exp(res);
+            res = NULL;
+            break;
         }
-        e_str = t_str;
-        if(*e_str == ')')
+        if(e_str == NULL || *e_str == ')')
         {
             break;
         }
     }
-    for(;*e_str;e_str++)
-    {
-        if(isblank(*e_str))
-        {
-            continue;
-        }
-        break;
-    }
     if(end_str)
     {
-        *end_str = e_str;
+        *end_str = calc_item_exp_skip_blank(e_str);
     }
     return res;
 }
 
-CalcItem*
-calc_item_get(CalcItem *parent,CalcItem *last_item,const char *exp_string, char **end_str)
+static inline void
+calc_item_exp_error(const char *exp_string,const char *end_str)
 {
-    char *e_str = NULL;
+    int exp_len = strlen(exp_string);
+    int error_i = end_str - exp_string;
+    const char *pt = exp_string;
+
+    if(error_i >= 0 && error_i < exp_len)
+    {
+        fprintf(stderr,"Error expression:\n");
+        while(pt < end_str)
+        {
+            fprintf(stderr,"%c",*pt);
+            pt ++;
+        }
+        fprintf(stderr," ## %s\n",end_str);
+    }
+}
+
+CalcItem*
+calc_item_get(CalcItem *parent,CalcItem *last_item,const char *exp_string, const  char **end_str)
+{
+    const char *e_str = NULL;
     OperatorID last_opid = OPERATOR_NONE;
     CalcItemType last_type = ITEM_OP;
     CalcItem    *res = NULL;
@@ -353,6 +432,7 @@ calc_item_get(CalcItem *parent,CalcItem *last_item,const char *exp_string, char 
             last_opid = last_item->it.opid;
         }
     }
+    exp_string = calc_item_exp_skip_blank(exp_string);
     if(last_type == ITEM_OP)
     {
         if(exp_string[0] == '('|| (parent == NULL && last_item == NULL) )
@@ -364,32 +444,39 @@ calc_item_get(CalcItem *parent,CalcItem *last_item,const char *exp_string, char 
             if(e_str[0] == '(' && parent != NULL)
                 e_str ++;
             res->it.exp = calc_item_exp(res,e_str,&e_str);
-            e_str ++;
-        }else{
+            if(res->it.exp)
+            {
+                if(e_str[0])e_str ++;
+            }else
+            {
+                calc_item_free(res);
+                res = NULL;
+            }
+        }else if(isdigit(exp_string[0])){
             res = calc_item_new(ITEM_NUM);
             res->it.num = strtod(exp_string,&e_str);
+        }else{
+            
         }
-    }else if(last_type == ITEM_NUM || last_type == ITEM_EXP){
-        for(e_str=exp_string;*e_str;e_str++)
+    }else if(last_type == ITEM_NUM || last_type == ITEM_EXP)
+    {
+        opid = string_get_match_opid(exp_string,&e_str);
+        op = operator_get(opid);
+        if(op)
         {
-            if(isblank(*e_str))
-            {
-                continue;
-            }
-            opid = string_prefix_get_match_opid(e_str);
-            op = operator_get(opid);
-            if(op)
-            {
-                res = calc_item_new(ITEM_OP);
-                res->it.opid = opid;
-                e_str += strlen(op);
-            }
-            break;
+            res = calc_item_new(ITEM_OP);
+            res->it.opid = opid;
+        }else{
+            e_str = exp_string;
         }
     }
     if(end_str)
     {
         *end_str = e_str;
+    }
+    if(res == NULL && parent == NULL && last_item == NULL)
+    {
+        calc_item_exp_error(exp_string,e_str);
     }
     return res;
 }
@@ -400,7 +487,7 @@ calc_item_exp_real_calc(CalcItem *it)
     CalcItem **exp = it->it.exp;
     OperatorID op1;
     OperatorID op2;
-    double num1 = 0,num2 = 0;
+    CommonNum num1 = 0,num2 = 0;
     int i = 0;
     if(exp)
     {
@@ -428,7 +515,7 @@ calc_item_exp_real_calc(CalcItem *it)
                     break;
                 }else if(operator_cmpid(op1,op2) >= 0)
                 {
-                    double res = operators_funcs[op1](num1,num2);
+                    CommonNum res = operators_funcs[op1](num1,num2);
                     exp[0]->it.num = res;
                     calc_item_merge_exp(exp,1,3);
                     if(op2 == OPERATOR_NONE && i== 1)
@@ -457,7 +544,7 @@ calc_item_to_result(CalcItem *it,CalcResult *crt)
     }
 }
 
-///1 表示完成,0
+///1 表示未完成,0完成
 static inline short
 calc_item_strip_num_only_exp(CalcItem *it,short strip_all)
 {
@@ -465,6 +552,9 @@ calc_item_strip_num_only_exp(CalcItem *it,short strip_all)
     short d = 0;
     short f = 0;
     
+    if (it == NULL) {
+        return 0;
+    } 
 head:
     d = 0;
     i = 0;
@@ -517,6 +607,8 @@ calc_item_calc(CalcItem *it,CalcResult *crt)
     
     CalcItem **exp;
 
+    if(it == NULL)
+        return;
     calc_item_to_result(it,crt);
 
     while(it->type == ITEM_EXP)
@@ -568,7 +660,8 @@ calc_item_to_string(const CalcItem *it,short is_top_item)
                 {
                     is_negative = 1;
                 }
-                n = snprintf(tstr,sizeof(tstr),"%0.*lf",MAX_DOT_CHAR,it->it.num);
+                n = common_num_to_string(it->it.num,tstr,sizeof(tstr));
+                ///nprintf(tstr,sizeof(tstr),"%0.*lf",MAX_DOT_CHAR,it->it.num);
                 if(is_negative)
                 {
                     n += 4; 
@@ -629,13 +722,57 @@ calc_item_print(const CalcItem *it)
     free(res);
 }
 
+
+int
+calc_exp_syntax_fix(const char *exp_string,char **return_string)
+{
+    if(return_string == NULL)
+        return 0;
+    *return_string = NULL;
+    if(exp_string == NULL && exp_string[0] == 0)
+        return 0;
+
+    int res_len = strlen(exp_string) *2+1;
+    int op_len = 0;
+    int i,j = 0;
+    int ri = 0;
+    char *res = malloc(res_len);
+    bzero(res,res_len);
+    for(i=0;exp_string[i] && ri<res_len ;i++)
+    {
+        for(j=0;op_alias_array[j].op;j++)
+        {
+            op_len = strlen(op_alias_array[j].op_alias);
+            if(strncmp(exp_string+i,op_alias_array[j].op_alias,op_len) == 0)
+            {
+                char c = exp_string[i+op_len];
+                printf("c=%c\n",c);
+                if(c == ' ' || c =='(' || isdigit(c))
+                {
+                    i+=op_len;
+                    op_len = strlen(op_alias_array[j].op);
+                    memcpy(res+ri,op_alias_array[j].op,op_len);
+                    ri+=op_len;
+                    continue;
+                }
+            }
+        }
+        res[ri] = exp_string[i];
+        ri ++;
+    }
+    *return_string = res;
+    return 0;
+}
+
+
+
 #if defined(on_test)
 
 int maind(int argc,char **argv)
 {
     if(argc > 1)
     {
-        char *end_str = NULL;
+        const char *end_str = NULL;
         char *res = NULL;
         CalcResult crt = {0};
         CalcItem*   it = calc_item_get(NULL,NULL,argv[1],&end_str);
@@ -661,6 +798,16 @@ int main1(int argc,char **argv)
         printf("res:%d\n",operator_cmp_op(argv[1],argv[2]));
     }
     return 0;
+}
+
+int test(const char *s)
+{
+    int r = 0;
+    char *rs;
+    
+    r = calc_exp_syntax_fix(s,&rs);
+    printf("rs:%s\n",rs);
+    return r;
 }
 
 int main(int argc,char **argv)

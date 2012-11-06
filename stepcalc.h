@@ -21,6 +21,8 @@ ITEM_OP,
 ITEM_EXP,
 }CalcItemType;
 
+typedef long double CommonNum;
+
 typedef enum
 {
     OPERATOR_NONE = -1,
@@ -38,9 +40,9 @@ struct _CalcItem
 {
     CalcItemType type;
     union{
-        double num;             ///number
-        OperatorID    opid;            ///operator id
-        CalcItem **exp;      ///array of CalcItem*,expression
+        CommonNum num;                 ///number
+        OperatorID    opid;         ///operator id
+        CalcItem **exp;             ///array of CalcItem*,expression
     }it;
 };
 
@@ -51,7 +53,7 @@ struct _CalcResult
 };
 
 CalcItem*
-calc_item_get(CalcItem *parent,CalcItem *last_item,const char *exp_string, char **end_str);
+calc_item_get(CalcItem *parent,CalcItem *last_item,const char *exp_string, const char **end_str);
 
 char*
 calc_item_to_string(const CalcItem *it,short is_top_item);
